@@ -54,10 +54,6 @@ count="${count:-5}"
 
 # Rotate backups
 for i in $(seq "${count}" '-1' '1'); do
-	echo "$i"
-	echo test "${mountpoint}/${basename}.bak.${i}${comp_ext}"
-	echo mv from "${mountpoint}/${basename}.bak.${i}${comp_ext}"
-	echo mv to "${mountpoint}/${basename}.bak.$((i+1))${comp_ext}"
 	[ -f "${mountpoint}/${basename}.bak.${i}${comp_ext}" ] && echo test is ok || echo test is FAIL
 	[ -f "${mountpoint}/${basename}.bak.${i}${comp_ext}" ] && mv "${mountpoint}/${basename}.bak.${i}${comp_ext}" "${mountpoint}/${basename}.bak.$((i+1))${comp_ext}"
 done
