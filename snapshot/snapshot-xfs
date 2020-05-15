@@ -1,0 +1,73 @@
+#!/bin/sh
+# Provided a mounted mountpoint, this script will create a XFS backup of the
+# filesystem.
+set -e
+
+usage() {
+	cat << EOF
+Usage: $0 MOUNTPOINT [COUNT] [--compress <EXEC>] [--compress-args <ARGS>] [--compress-ext <EXTENSION>]
+  MOUNTPOINT              Mountpoint to use for the snapshot, must be mounted
+  COUNT                   Number of snapshot to keep, defaults to 5
+  --compress, -c          Select the program to use for compression
+  --compress-args, -a     Select the arguments to pass to the file compressor
+  --compress-ext, -e      Select the file extension of the compressed file
+
+EOF
+}
+
+[ "$#" -eq '0' ] && usage && exit 0 || true
+while test "$#" -ne '0'; do
+	case "$1" in
+	--help|-h)
+		usage
+		exit 0
+		;;
+	--compress|-c)
+		shift
+		comp_exec="$1"
+		;;
+	--compress-args|-a)
+		shift
+		comp_args="$1"
+		;;
+	--compress-ext|-e)
+		shift
+		comp_ext="$1"
+		;;
+	*)
+		if [ -z "${mountpoint}" ]; then
+			mountpoint="$1"
+		elif [ -z "${count}" ]; then
+			count="$1"
+		else
+			usage && exit 1
+		fi
+		;;
+	esac
+	shift
+done
+
+[ -z "${mountpoint}" ] && usage && exit 0 || true
+basename="$(basename -- "${mountpoint}")"
+count="${count:-5}"
+[ -n "${comp_ext}" ] && comp_ext=".${comp_ext}"
+
+# Rotate backups
+for i in $(seq "${count}" '-1' '1'); do
+	echo "$i"
+	echo test "${mountpoint}/${basename}.bak.${i}${comp_ext}"
+	echo mv from "${mountpoint}/${basename}.bak.${i}${comp_ext}"
+	echo mv to "${mountpoint}/${basename}.bak.$((i+1))${comp_ext}"
+	[ -f "${mountpoint}/${basename}.bak.${i}${comp_ext}" ] && echo test is ok || echo test is FAIL
+	[ -f "${mountpoint}/${basename}.bak.${i}${comp_ext}" ] && mv "${mountpoint}/${basename}.bak.${i}${comp_ext}" "${mountpoint}/${basename}.bak.$((i+1))${comp_ext}"
+done
+
+# Create backup
+if [ -z "${comp_exec}" ]; then
+	xfsdump -L "${basename}" -M fullbackup -J -e - "${mountpoint}" >"${mountpoint}/${basename}.bak.1${comp_ext}"
+else
+	xfsdump -L "${basename}" -M fullbackup -J -e - "${mountpoint}" | "${comp_exec}" ${comp_args} >"${mountpoint}/${basename}.bak.1${comp_ext}"
+fi
+chattr +d "${mountpoint}/${basename}.bak.1${comp_ext}"
+chmod 400 "${mountpoint}/${basename}.bak.1${comp_ext}"
+

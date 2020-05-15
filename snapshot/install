@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+PREFIX="${PREFIX:-/usr/local}"
+
+[ "$(id -u)" = '0' ]
+
+for file in snapshot-btrfs snapshot-xfs rsync-fs; do
+	install -o root -g root -m 0755 "./${file}" "${PREFIX}/sbin/${file}"
+done
+

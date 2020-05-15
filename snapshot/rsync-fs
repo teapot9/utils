@@ -1,0 +1,36 @@
+#!/bin/sh
+# Synchronize one directory to another
+
+usage() {
+	cat << EOF
+Usage: $0 SOURCE DESTINATION [--pretend]
+  SOURCE         Source path of the sync
+  DEST           Destination path of the sync
+  --pretend      Only print what would be done
+EOF
+}
+
+for arg in "$@"; do
+	case "${arg}" in
+	--help|-h)
+		usage
+		exit 0
+		;;
+	--pretend|-p)
+		extra_args="--dry-run --verbose"
+		;;
+	*)
+		if [ -z "${src}" ]; then
+			src="${arg}"
+		elif [ -z "${dest}" ]; then
+			dest="${arg}"
+		else
+			usage
+			exit 1
+		fi
+		;;
+	esac
+done
+
+rsync ${extra_args} -axAXHr --delete --numeric-ids "${src}/" "${dest}/"
+

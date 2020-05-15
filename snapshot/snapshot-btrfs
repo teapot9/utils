@@ -1,0 +1,35 @@
+#!/bin/sh
+# Provided a mountpoint registered in /etc/fstab, this script will create a
+# BTRFS snapshot of the main subvolume. The subvolume name must have the same
+# name as the basename of the mountpoint.
+set -e
+
+usage() {
+	cat << EOF
+Usage: $0 MOUNTPOINT [COUNT]
+  MOUNTPOINT        Mountpoint to use for the snapshot, must be in /etc/fstab
+  COUNT             Number of snapshot to keep, defaults to 5
+EOF
+}
+
+[ "$1" = "--help" ] || [ "$1" = "-h" ] && usage && exit 0 || true
+[ -z "$1" ] && usage && exit 0 || true
+
+mountpoint="$1"
+basename="$(basename -- "${mountpoint}")"
+count="${2:-5}"
+
+# Mount
+[ -d "${mountpoint}" ] || mkdir -p "${mountpoint}"
+mount "${mountpoint}"
+
+# Rotate backups
+for i in $(seq "${count}" '-1' '1'); do
+	[ -d "${mountpoint}/${basename}.$((i+1))" ] && btrfs subvolume delete "${mountpoint}/${basename}.$((i+1))"
+	[ -d "${mountpoint}/${basename}.${i}" ] && mv "${mountpoint}/${basename}.${i}" "${mountpoint}/${basename}.$((i+1))"
+done
+btrfs subvolume snapshot -r "${mountpoint}/${basename}" "${mountpoint}/${basename}.1"
+
+# Dismount
+sync && umount "${mountpoint}"
+
