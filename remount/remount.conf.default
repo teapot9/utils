@@ -1,0 +1,8 @@
+# /etc/remount.conf
+# This file contain a list of default mountpoints used by remount
+# Each non-empty line contain a mountpoint
+# This list is overriden at runtime by arguments
+
+/
+/usr
+
