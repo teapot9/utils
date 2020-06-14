@@ -1,0 +1,427 @@
+#!/bin/sh
+#
+# This script manages chroot directories
+#
+set -eu
+
+# Constants
+CHROOT_BASE='/mnt/chroot'
+CHROOT_ROOT_SUBVOL="${CHROOT_BASE}/root"
+CHROOT_DEV='UUID=94f4a6ec-f57e-41da-a86d-b9f26e845b17'
+OVERLAY_BASE='/home/yoshi/Documents/Dev'
+
+# Global variables
+OVERLAYS=''
+EXEC_CMD='/bin/bash -l'
+TARBALL=''
+ACTION=''
+CHROOT=''
+
+#
+# usage() - Print help message
+#
+
+usage() {
+	cat <<EOF
+Usage: $0 [-o OVERLAY] [-t TARBALL] [-x EXEC_CMD] ACTION CHROOT
+  -o, --overlay     Add an overlay to the chroot (start, new)
+  -t, --tarball     Use this tarball when creating the chroot (new)
+  -x, --exec        Use this command when chrooting (start)
+
+Actions :
+  start: Chroot into CHROOT using the given command (defaults to /bin/bash -l)
+  new: Creates a new CHROOT using the given tarball
+  destroy: Destroy a CHROOT and its backups
+  backup: Set the current state of CHROOT as the base state
+  reset: Rollback CHROOT to its base state
+
+The tarball is a tar archive, possibly compressed.
+Multiple overlay can be given, they will be added to /var/db/repos and
+appended to /etc/portage/repos.conf.
+The exec command is executed as is when chrooting.
+EOF
+}
+
+#
+# die() - Exit with error
+#
+
+die() {
+	echo "FATAL: " "$@" 1>&2
+	exit 1
+}
+
+#
+# parse() - Parse arguments
+# Usage: parse "$@"
+#
+
+parse() {
+	unset loop
+	while [ $# -ne 0 ] || [ -n "${loop+x}" ]; do
+		[ -z "${loop+x}" ] && arg="$1" && shift
+		unset loop
+		case "${arg}" in
+		-o|--overlay)
+			OVERLAYS="${OVERLAYS} $1"
+			shift
+			;;
+		-o*)
+			OVERLAYS="${OVERLAYS} ${arg#??}"
+			;;
+		--overlay=*)
+			OVERLAYS="${OVERLAYS} ${arg#*=}"
+			;;
+		-t|--tarball)
+			TARBALL="$1"
+			shift
+			;;
+		-t*)
+			TARBALL="${arg#??}"
+			;;
+		--tarball=*)
+			TARBALL="${arg#*=}"
+			;;
+		-x|--exec)
+			EXEC_CMD="$1"
+			shift
+			;;
+		-x*)
+			EXEC_CMD="${arg#??}"
+			;;
+		--exec=*)
+			EXEC_CMD="${arg#*=}"
+			;;
+		-h|--help)
+			usage
+			exit 0
+			;;
+		-h*)
+			arg="-${arg#??}"
+			loop=
+			;;
+		--)
+			arg="$1"
+			break
+			;;
+		-?*)
+			usage
+			die "Unknown option ${arg}"
+			;;
+		*)
+			break
+			;;
+		esac
+	done
+	ACTION="${arg}"
+	CHROOT="$1"
+	[ ! -d "${CHROOT}" ] && CHROOT="${CHROOT_BASE}/${CHROOT}"
+}
+
+#
+# start() - Action to chroot into CHROOT
+#
+
+start() {
+	set -eu
+
+	#
+	# Check arguments
+	#
+
+	for overlay in ${OVERLAYS}; do
+		[ -d "${OVERLAY_BASE}/${overlay}" ] \
+			|| die "Overlay ${overlay} not found"
+	done
+	[ -d "${CHROOT}" ] || die "Chroot ${CHROOT} not found"
+	mountpoint -q "${CHROOT}" && die "${CHROOT} already mounted" || :
+
+	#
+	# Mount normal filesystem
+	#
+
+	# Mount /
+	subvol="$(basename -- "${CHROOT}")"
+	mount \
+		-t btrfs \
+		-o "noatime,rw,ssd,compress=zstd:3,subvol=${subvol}" \
+		"${CHROOT_DEV}" "${CHROOT}"
+	# Mount /tmp
+	mount \
+		-t tmpfs \
+		-o noatime,nodev,nosuid,noexec,size=8g,mode=1777 \
+		none "${CHROOT}/tmp"
+	# Mount /var/tmp/portage
+	if [ ! -d "${CHROOT}/var/tmp/portage" ]; then
+		mkdir "${CHROOT}/var/tmp/portage"
+		chown portage:portage "${CHROOT}/var/tmp/portage"
+		chmod 0775 "${CHROOT}/var/tmp/portage"
+	fi
+	mount \
+		-t tmpfs \
+		-o noatime,nodev,nosuid,size=8g,uid=portage,gid=portage,mode=775 \
+		none "${CHROOT}/var/tmp/portage"
+	# Create /var/tmp/portage-notmpfs
+	if [ ! -d "${CHROOT}/var/tmp/portage-notmpfs" ]; then
+		mkdir "${CHROOT}/var/tmp/portage-notmpfs"
+		chown portage:portage "${CHROOT}/var/tmp/portage-notmpfs"
+		chmod 0775 "${CHROOT}/var/tmp/portage-notmpfs"
+	fi
+	# Mount /usr/src
+	mount --bind -o ro /usr/src "${CHROOT}/usr/src"
+
+	#
+	# Mount overlays
+	#
+
+	for overlay in ${OVERLAYS}; do
+		[ -d "${CHROOT}/var/db/repos/${overlay}" ] \
+			|| mkdir -p "${CHROOT}/var/db/repos/${overlay}"
+		mount \
+			--bind \
+			-o ro \
+			"${OVERLAY_BASE}/${overlay}" \
+			"${CHROOT}/var/db/repos/${overlay}"
+		[ -f "${CHROOT}/etc/portage/repos.conf/${overlay}.conf" ] \
+			|| cat <<EOF >"${CHROOT}/etc/portage/repos.conf/${overlay}.conf"
+[$(head -1 "${OVERLAY_BASE}/${overlay}/profiles/repo_name")]
+location = /var/db/repos/${overlay}
+auto-sync = no
+EOF
+	done
+
+	#
+	# Mount specials filesystems
+	#
+
+	# Mount /proc /sys /dev
+	mount --types proc /proc "${CHROOT}/proc"
+	mount --rbind /sys "${CHROOT}/sys"
+	mount --make-rslave "${CHROOT}/sys"
+	mount --rbind /dev "${CHROOT}/dev"
+	mount --make-rslave "${CHROOT}/dev"
+	# Mount /dev/shm if required
+	if [ -L /dev/shm ]; then
+		rm /dev/shm
+		mkdir /dev/shm
+		mount -t tmpfs -o noatime,nodev,nosuid,noexec,size=1g shm /dev/shm
+		chmod 1777 /dev/shm
+	fi
+
+	#
+	# System configuration
+	#
+
+	# Networking
+	cp --dereference /etc/resolv.conf "${CHROOT}/etc/"
+
+	#
+	# Chroot
+	#
+
+	# Chroot
+	chroot "${CHROOT}" ${EXEC_CMD} || echo "Chroot exited with error $?" 1>&2
+
+	# Unmount all
+	umount -R "${CHROOT}" || echo "Umount failed" 1>&2
+}
+
+#
+# new() - Action to create new chroot environment
+#
+
+new() {
+	set -eu
+
+	#
+	# Check arguments
+	#
+
+	chroot_name="$(basename -- "${CHROOT}")"
+	chroot_subvol="${CHROOT_ROOT_SUBVOL}/${chroot_name}"
+	[ ! -d "${CHROOT}" ] || die "${CHROOT} already exists"
+	[ ! -d "${chroot_subvol}" ] || die "${chroot_subvol} already exists"
+	[ -f "${TARBALL}" ] || die "Tarball ${TARBALL} not found"
+
+	#
+	# Install base layout
+	#
+
+	btrfs subvolume create "${chroot_subvol}"
+	tar \
+		-xpf "${TARBALL}" \
+		--xattrs-include='*.*' --numeric-owner \
+		-C "${chroot_subvol}"
+
+	#
+	# Configure system
+	#
+
+	# Portage configuration
+	echo "GENTOO_MIRRORS=\"$(portageq envvar GENTOO_MIRRORS)\"" \
+		>>"${chroot_subvol}/etc/portage/make.conf"
+	mkdir -p "${chroot_subvol}/etc/portage/repos.conf"
+	cp -L "${chroot_subvol}/usr/share/portage/config/repos.conf" \
+		"${chroot_subvol}/etc/portage/repos.conf/gentoo.conf"
+	echo "sys-apps/portage gentoo-dev" \
+		>>"${chroot_subvol}/etc/portage/package.use/portage"
+
+	# System configuration
+	echo "en_US.UTF-8 UTF-8" >>"${chroot_subvol}/etc/locale.gen"
+	ln -s /dev/null "${chroot_subvol}/root/.bash_history"
+
+	# root .profile
+	cat <<'EOF' >"${chroot_subvol}/root/.profile"
+PKG_TEST=''
+pkg_test() {
+	PKG_TEST="$1"
+	echo "${PKG_TEST} **" >>/etc/portage/package.accept_keywords
+}
+pkg_use() {
+	busybox vi /etc/portage/package.use/package
+}
+pkg_deps() {
+	busybox vi /etc/portage/package.use/deps
+}
+alias emerge-deps='emerge -1av --onlydeps --with-test-deps ${PKG_TEST}'
+alias emerge-pkg='emerge -1av ${PKG_TEST}'
+env-update
+. /etc/profile
+PS1="(chroot) ${PS1}"
+export PS1
+cd "${HOME}"
+EOF
+
+	# First chroot script
+	cat <<'EOF' >"${chroot_subvol}/root/first"
+#!/bin/sh
+locale-gen
+eselect locale set en_US.utf8
+env-update
+. /etc/profile
+export PS1="(chroot) ${PS1}"
+emerge-webrsync
+echo "TODO: nano /etc/portage/make.conf"
+echo "TODO: emerge --sync"
+echo "TODO: emerge -avuDN --with-bdeps=y --keep-going @world --pretend"
+echo "TODO: emerge --depclean --ask --verbose --pretend"
+exec bash -l
+EOF
+	chmod +x "${chroot_subvol}/root/first"
+
+	#
+	# First chroot
+	#
+
+	# Create chroot directory
+	remount rw
+	if mkdir "${CHROOT}"; then
+		remount ro || :
+	else
+		remount ro || :
+		die "Could not create ${CHROOT} directory"
+	fi
+
+	# Chroot
+	start
+	
+	# Purge distfiles
+	rm -r "${chroot_subvol}"/var/cache/distfiles/* || :
+}
+
+#
+# backup() - Set current CHROOT state as base state
+#
+
+backup() {
+	set -eu
+
+	#
+	# Check arguments
+	#
+
+	chroot_name="$(basename -- "${CHROOT}")"
+	chroot_subvol="${CHROOT_ROOT_SUBVOL}/${chroot_name}"
+	chroot_base="${chroot_subvol}-base"
+	[ -d "${chroot_subvol}" ] || die "Subvolume ${chroot_subvol} not found"
+
+	#
+	# Backup
+	#
+
+	# Purge distfiles
+	rm -r "${chroot_subvol}"/var/cache/distfiles/* || :
+
+	# Remove old base and backup
+	if [ -d "${chroot_base}" ]; then
+		btrfs subvolume delete "${chroot_base}"
+	fi
+	btrfs subvolume snapshot -r "${chroot_subvol}" "${chroot_base}"
+}
+
+#
+# reset() - Rollback CHROOT state to base state
+#
+
+reset() {
+	set -eu
+
+	#
+	# Check arguments
+	#
+
+	chroot_name="$(basename -- "${CHROOT}")"
+	chroot_subvol="${CHROOT_ROOT_SUBVOL}/${chroot_name}"
+	chroot_base="${chroot_subvol}-base"
+	[ -d "${chroot_subvol}" ] || die "Subvolume ${chroot_subvol} not found"
+	[ -d "${chroot_base}" ] || die "Subvolume ${chroot_base} not found"
+
+	#
+	# Rollback
+	#
+
+	btrfs subvolume delete "${chroot_subvol}"
+	btrfs subvolume snapshot "${chroot_base}" "${chroot_subvol}"
+}
+
+#
+# destroy() - Destroy the CHROOT and all its backups
+#
+
+destroy() {
+	set -eu
+
+	#
+	# Check arguments
+	#
+
+	chroot_name="$(basename -- "${CHROOT}")"
+	chroot_subvol="${CHROOT_ROOT_SUBVOL}/${chroot_name}"
+	chroot_base="${chroot_subvol}-base"
+	[ -d "${chroot_subvol}" ] || die "Subvolume ${chroot_subvol} not found"
+
+	#
+	# Destruction
+	#
+
+	if [ -d "${chroot_base}" ]; then
+		btrfs subvolume delete "${chroot_base}"
+	fi
+	btrfs subvolume delete "${chroot_subvol}"
+}
+
+#
+# Start of the script
+#
+
+parse "$@"
+[ "$(id -u)" -eq 0 ] || die 'root permissions required'
+
+case "${ACTION}" in
+	start) start ;;
+	new) new ;;
+	backup) backup ;;
+	reset) reset ;;
+	destroy) destroy ;;
+esac
+

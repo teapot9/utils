@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+prog_name="$(basename -- "$(dirname -- "$(realpath -- "$0")")")"
+path="$(dirname -- "$(realpath -- "$0")")/${prog_name}"
+dest="$(realpath --relative-to="${HOME}/.local/bin" -- "${path}")"
+ln -s "${dest}" "${HOME}/.local/bin/${prog_name}"
+
