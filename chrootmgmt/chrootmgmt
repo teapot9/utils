@@ -8,7 +8,7 @@ set -eu
 CHROOT_BASE='/mnt/chroot'
 CHROOT_ROOT_SUBVOL="${CHROOT_BASE}/root"
 CHROOT_DEV='UUID=94f4a6ec-f57e-41da-a86d-b9f26e845b17'
-OVERLAY_BASE='/home/yoshi/Documents/Dev'
+OVERLAY_BASE='/home/yoshi/Documents/portage'
 
 # Global variables
 OVERLAYS=''
@@ -200,6 +200,7 @@ EOF
 	mount --make-rslave "${CHROOT}/sys"
 	mount --rbind /dev "${CHROOT}/dev"
 	mount --make-rslave "${CHROOT}/dev"
+	mount --types tmpfs none "${CHROOT}/run"
 	# Mount /dev/shm if required
 	if [ -L /dev/shm ]; then
 		rm /dev/shm
@@ -265,6 +266,10 @@ new() {
 		"${chroot_subvol}/etc/portage/repos.conf/gentoo.conf"
 	echo "sys-apps/portage gentoo-dev" \
 		>>"${chroot_subvol}/etc/portage/package.use/portage"
+	[ -d "${chroot_subvol}/etc/portage/env" ] \
+		|| mkdir "${chroot_subvol}/etc/portage/env"
+	echo 'PORTAGE_TMPDIR="/var/tmp/portage-notmpfs"' \
+		>"${chroot_subvol}/etc/portage/env/notmpfs.conf"
 
 	# System configuration
 	echo "en_US.UTF-8 UTF-8" >>"${chroot_subvol}/etc/locale.gen"
@@ -273,15 +278,18 @@ new() {
 	# root .profile
 	cat <<'EOF' >"${chroot_subvol}/root/.profile"
 PKG_TEST=''
-pkg_test() {
+pksetup() {
 	PKG_TEST="$1"
 	echo "${PKG_TEST} **" >>/etc/portage/package.accept_keywords
 }
-pkg_use() {
-	busybox vi /etc/portage/package.use/package
-}
-pkg_deps() {
-	busybox vi /etc/portage/package.use/deps
+pkconf() {
+	case "$1" in
+		use) file="package.use/package" ;;
+		provided) file="profile/package.provided" ;;
+		key) file="package.accept_keywords" ;;
+		*) file="package.${1}" ;;
+	esac
+	busybox vi "/etc/portage/${file}"
 }
 alias emerge-deps='emerge -1av --onlydeps --with-test-deps ${PKG_TEST}'
 alias emerge-pkg='emerge -1av ${PKG_TEST}'
