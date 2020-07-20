@@ -17,6 +17,43 @@ TARBALL=''
 ACTION=''
 CHROOT=''
 
+# Text constants
+ROOT_PROFILE="$(cat <<'EOF'
+PKG_TEST=''
+pksetup() {
+	PKG_TEST="$1"
+	echo "${PKG_TEST} **" >>/etc/portage/package.accept_keywords
+}
+pkconf() {
+	case "$1" in
+		use) file="package.use/package" ;;
+		provided) file="profile/package.provided" ;;
+		key) file="package.accept_keywords" ;;
+		*) file="package.${1}" ;;
+	esac
+	busybox vi "/etc/portage/${file}"
+}
+alias emerge-deps='emerge -1av --onlydeps --with-test-deps ${PKG_TEST}'
+alias emerge-pkg='emerge -1av ${PKG_TEST}'
+env-update
+. /etc/profile
+PS1="(chroot) ${PS1}"
+export PS1
+cd "${HOME}"
+EOF
+)"
+FIRST_CHROOT_SCRIPT="$(cat <<'EOF'
+#!/bin/sh
+locale-gen
+eselect locale set en_US.utf8
+env-update
+. /etc/profile
+export PS1="(chroot) ${PS1}"
+echo "First chroot"
+exec bash -l
+EOF
+)"
+
 #
 # usage() - Print help message
 #
@@ -29,7 +66,9 @@ Usage: $0 [-o OVERLAY] [-t TARBALL] [-x EXEC_CMD] ACTION CHROOT
   -x, --exec        Use this command when chrooting (start)
 
 Actions :
-  start: Chroot into CHROOT using the given command (defaults to /bin/bash -l)
+  start: Load chroot
+  chroot: Chroot into CHROOT
+  stop: Unload chroot
   new: Creates a new CHROOT using the given tarball
   destroy: Destroy a CHROOT and its backups
   backup: Set the current state of CHROOT as the base state
@@ -114,12 +153,14 @@ parse() {
 		esac
 	done
 	ACTION="${arg}"
-	CHROOT="$1"
-	[ ! -d "${CHROOT}" ] && CHROOT="${CHROOT_BASE}/${CHROOT}"
+	case "${1}" in
+		/*) CHROOT="${1}" ;;
+		*) CHROOT="${CHROOT_BASE}/${1}" ;;
+	esac
 }
 
 #
-# start() - Action to chroot into CHROOT
+# start() - Start chroot: prepare for chroot
 #
 
 start() {
@@ -171,6 +212,33 @@ start() {
 	mount --bind -o ro /usr/src "${CHROOT}/usr/src"
 
 	#
+	# Create configuration
+	#
+
+	# Portage configuration
+	echo "GENTOO_MIRRORS=\"$(portageq envvar GENTOO_MIRRORS)\"" \
+		>>"${CHROOT}/etc/portage/make.conf"
+	[ -d "${CHROOT}/etc/portage/repos.conf" ] \
+		|| mkdir -p "${CHROOT}/etc/portage/repos.conf"
+	cp -L "${CHROOT}/usr/share/portage/config/repos.conf" \
+		"${CHROOT}/etc/portage/repos.conf/gentoo.conf"
+	[ -d "${CHROOT}/etc/portage/package.use" ] \
+		|| mkdir "${CHROOT}/etc/portage/package.use"
+	echo "sys-apps/portage gentoo-dev" \
+		>>"${CHROOT}/etc/portage/package.use/portage"
+	[ -d "${CHROOT}/etc/portage/env" ] \
+		|| mkdir "${CHROOT}/etc/portage/env"
+	echo 'PORTAGE_TMPDIR="/var/tmp/portage-notmpfs"' \
+		>"${CHROOT}/etc/portage/env/notmpfs.conf"
+
+	# System configuration
+	echo "en_US.UTF-8 UTF-8" >>"${CHROOT}/etc/locale.gen"
+	ln -s /dev/null "${CHROOT}/root/.bash_history"
+
+	# root .profile
+	printf "%s" "${ROOT_PROFILE}" >"${CHROOT}/root/.profile"
+
+	#
 	# Mount overlays
 	#
 
@@ -210,20 +278,29 @@ EOF
 	fi
 
 	#
-	# System configuration
+	# Host configuration
 	#
 
 	# Networking
 	cp --dereference /etc/resolv.conf "${CHROOT}/etc/"
+}
 
-	#
-	# Chroot
-	#
+#
+# chroot() - Chroot into a directory
+#
 
-	# Chroot
+run_chroot() {
+	if ! mount "${CHROOT}"; then
+		start || die "Could not start ${CHROOT}"
+	fi
 	chroot "${CHROOT}" ${EXEC_CMD} || echo "Chroot exited with error $?" 1>&2
+}
 
-	# Unmount all
+#
+# stop() - Stop mounted chroot
+#
+
+stop() {
 	umount -R "${CHROOT}" || echo "Umount failed" 1>&2
 }
 
@@ -258,64 +335,10 @@ new() {
 	# Configure system
 	#
 
-	# Portage configuration
-	echo "GENTOO_MIRRORS=\"$(portageq envvar GENTOO_MIRRORS)\"" \
-		>>"${chroot_subvol}/etc/portage/make.conf"
-	mkdir -p "${chroot_subvol}/etc/portage/repos.conf"
-	cp -L "${chroot_subvol}/usr/share/portage/config/repos.conf" \
-		"${chroot_subvol}/etc/portage/repos.conf/gentoo.conf"
-	echo "sys-apps/portage gentoo-dev" \
-		>>"${chroot_subvol}/etc/portage/package.use/portage"
-	[ -d "${chroot_subvol}/etc/portage/env" ] \
-		|| mkdir "${chroot_subvol}/etc/portage/env"
-	echo 'PORTAGE_TMPDIR="/var/tmp/portage-notmpfs"' \
-		>"${chroot_subvol}/etc/portage/env/notmpfs.conf"
-
-	# System configuration
-	echo "en_US.UTF-8 UTF-8" >>"${chroot_subvol}/etc/locale.gen"
-	ln -s /dev/null "${chroot_subvol}/root/.bash_history"
-
-	# root .profile
-	cat <<'EOF' >"${chroot_subvol}/root/.profile"
-PKG_TEST=''
-pksetup() {
-	PKG_TEST="$1"
-	echo "${PKG_TEST} **" >>/etc/portage/package.accept_keywords
-}
-pkconf() {
-	case "$1" in
-		use) file="package.use/package" ;;
-		provided) file="profile/package.provided" ;;
-		key) file="package.accept_keywords" ;;
-		*) file="package.${1}" ;;
-	esac
-	busybox vi "/etc/portage/${file}"
-}
-alias emerge-deps='emerge -1av --onlydeps --with-test-deps ${PKG_TEST}'
-alias emerge-pkg='emerge -1av ${PKG_TEST}'
-env-update
-. /etc/profile
-PS1="(chroot) ${PS1}"
-export PS1
-cd "${HOME}"
-EOF
-
 	# First chroot script
-	cat <<'EOF' >"${chroot_subvol}/root/first"
-#!/bin/sh
-locale-gen
-eselect locale set en_US.utf8
-env-update
-. /etc/profile
-export PS1="(chroot) ${PS1}"
-emerge-webrsync
-echo "TODO: nano /etc/portage/make.conf"
-echo "TODO: emerge --sync"
-echo "TODO: emerge -avuDN --with-bdeps=y --keep-going @world --pretend"
-echo "TODO: emerge --depclean --ask --verbose --pretend"
-exec bash -l
-EOF
-	chmod +x "${chroot_subvol}/root/first"
+	printf "%s" "${FIRST_CHROOT_SCRIPT}" >"${chroot_subvol}/root/first"
+	chmod +x "${chroot_subvol}/root/.first"
+	EXEC_CMD="/root/.first"
 
 	#
 	# First chroot
@@ -332,6 +355,8 @@ EOF
 
 	# Chroot
 	start
+	run_chroot
+	stop
 	
 	# Purge distfiles
 	rm -r "${chroot_subvol}"/var/cache/distfiles/* || :
@@ -427,6 +452,8 @@ parse "$@"
 
 case "${ACTION}" in
 	start) start ;;
+	stop) stop ;;
+	chroot) run_chroot ;;
 	new) new ;;
 	backup) backup ;;
 	reset) reset ;;
