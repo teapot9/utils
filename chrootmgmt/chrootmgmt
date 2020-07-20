@@ -49,8 +49,20 @@ eselect locale set en_US.utf8
 env-update
 . /etc/profile
 export PS1="(chroot) ${PS1}"
-echo "First chroot"
+emerge -1v sys-apps/portage
+echo "This is the first chroot for initial configuration"
+echo "After quitting chroot, a backup will be made"
 exec bash -l
+EOF
+)"
+MAKE_CONF="$(cat <<'EOF'
+MAKEOPTS="-j16 -l16"
+ACCEPT_LICENSE="-* @FREE"
+EMERGE_DEFAULT_OPTS="--ask-enter-invalid --jobs=8 --load-average 16 --oneshot --alert"
+EMERGE_DEFAULT_OPTS="${EMERGE_DEFAULT_OPTS} --quiet-build --quiet-fail --verbose"
+PORTAGE_NICENESS=19
+PORTAGE_IONICE_COMMAND="ionice -c 3 -p \${PID}"
+FEATURES="cgroup ipc-sandbox mount-sandbox network-sandbox pid-sandbox sandbox userfetch userpriv usersandbox collision-protect protect-owned strict strict-keepdir parallel-fetch parallel-install multilib-strict -news"
 EOF
 )"
 
@@ -157,6 +169,7 @@ parse() {
 		/*) CHROOT="${1}" ;;
 		*) CHROOT="${CHROOT_BASE}/${1}" ;;
 	esac
+	echo "${OVERLAYS}" | grep -q "gentoo" || OVERLAYS="${OVERLAYS} gentoo"
 }
 
 #
@@ -217,7 +230,8 @@ start() {
 
 	# Portage configuration
 	echo "GENTOO_MIRRORS=\"$(portageq envvar GENTOO_MIRRORS)\"" \
-		>>"${CHROOT}/etc/portage/make.conf"
+		>"${CHROOT}/etc/portage/chroot.make.conf"
+	printf "%s" "${MAKE_CONF}" >>"${CHROOT}/etc/portage/chroot.make.conf"
 	[ -d "${CHROOT}/etc/portage/repos.conf" ] \
 		|| mkdir -p "${CHROOT}/etc/portage/repos.conf"
 	cp -L "${CHROOT}/usr/share/portage/config/repos.conf" \
@@ -225,15 +239,17 @@ start() {
 	[ -d "${CHROOT}/etc/portage/package.use" ] \
 		|| mkdir "${CHROOT}/etc/portage/package.use"
 	echo "sys-apps/portage gentoo-dev" \
-		>>"${CHROOT}/etc/portage/package.use/portage"
+		>"${CHROOT}/etc/portage/package.use/portage"
 	[ -d "${CHROOT}/etc/portage/env" ] \
 		|| mkdir "${CHROOT}/etc/portage/env"
 	echo 'PORTAGE_TMPDIR="/var/tmp/portage-notmpfs"' \
 		>"${CHROOT}/etc/portage/env/notmpfs.conf"
 
 	# System configuration
+	echo "C.UTF8 UTF-8" >"${CHROOT}/etc/locale.gen"
 	echo "en_US.UTF-8 UTF-8" >>"${CHROOT}/etc/locale.gen"
-	ln -s /dev/null "${CHROOT}/root/.bash_history"
+	[ -e "${CHROOT}/root/.bash_history" ] \
+		|| ln -s /dev/null "${CHROOT}/root/.bash_history"
 
 	# root .profile
 	printf "%s" "${ROOT_PROFILE}" >"${CHROOT}/root/.profile"
@@ -290,10 +306,14 @@ EOF
 #
 
 run_chroot() {
-	if ! mount "${CHROOT}"; then
+	if ! mountpoint -q "${CHROOT}"; then
 		start || die "Could not start ${CHROOT}"
+		auto_stop=1
 	fi
-	chroot "${CHROOT}" ${EXEC_CMD} || echo "Chroot exited with error $?" 1>&2
+	chroot "${CHROOT}" ${EXEC_CMD}
+	if [ -n "${auto_stop:-}" ]; then
+		stop || die "Could not stop ${CHROOT}"
+	fi
 }
 
 #
@@ -301,7 +321,7 @@ run_chroot() {
 #
 
 stop() {
-	umount -R "${CHROOT}" || echo "Umount failed" 1>&2
+	umount -R "${CHROOT}"
 }
 
 #
@@ -335,8 +355,12 @@ new() {
 	# Configure system
 	#
 
+	# Portage configuration
+	echo "source /etc/portage/chroot.make.conf" \
+		>>"${chroot_subvol}/etc/portage/make.conf"
+
 	# First chroot script
-	printf "%s" "${FIRST_CHROOT_SCRIPT}" >"${chroot_subvol}/root/first"
+	printf "%s" "${FIRST_CHROOT_SCRIPT}" >"${chroot_subvol}/root/.first"
 	chmod +x "${chroot_subvol}/root/.first"
 	EXEC_CMD="/root/.first"
 
@@ -355,11 +379,9 @@ new() {
 
 	# Chroot
 	start
-	run_chroot
+	run_chroot || :
 	stop
-	
-	# Purge distfiles
-	rm -r "${chroot_subvol}"/var/cache/distfiles/* || :
+	backup
 }
 
 #
@@ -377,6 +399,7 @@ backup() {
 	chroot_subvol="${CHROOT_ROOT_SUBVOL}/${chroot_name}"
 	chroot_base="${chroot_subvol}-base"
 	[ -d "${chroot_subvol}" ] || die "Subvolume ${chroot_subvol} not found"
+	mountpoint -q "${CHROOT}" && stop
 
 	#
 	# Backup
@@ -408,6 +431,7 @@ reset() {
 	chroot_base="${chroot_subvol}-base"
 	[ -d "${chroot_subvol}" ] || die "Subvolume ${chroot_subvol} not found"
 	[ -d "${chroot_base}" ] || die "Subvolume ${chroot_base} not found"
+	mountpoint -q "${CHROOT}" && stop
 
 	#
 	# Rollback
@@ -432,6 +456,7 @@ destroy() {
 	chroot_subvol="${CHROOT_ROOT_SUBVOL}/${chroot_name}"
 	chroot_base="${chroot_subvol}-base"
 	[ -d "${chroot_subvol}" ] || die "Subvolume ${chroot_subvol} not found"
+	mountpoint -q "${CHROOT}" && stop
 
 	#
 	# Destruction
@@ -441,6 +466,9 @@ destroy() {
 		btrfs subvolume delete "${chroot_base}"
 	fi
 	btrfs subvolume delete "${chroot_subvol}"
+	remount rw
+	rmdir "${CHROOT}" || echo "Could not delete ${CHROOT} directory"
+	remount ro
 }
 
 #
