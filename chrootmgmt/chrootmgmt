@@ -16,6 +16,7 @@ EXEC_CMD='/bin/bash -l'
 TARBALL=''
 ACTION=''
 CHROOT=''
+CUSTOM_MAKE_CONF=''
 
 # Text constants
 ROOT_PROFILE="$(cat <<'EOF'
@@ -55,14 +56,14 @@ echo "After quitting chroot, a backup will be made"
 exec bash -l
 EOF
 )"
-MAKE_CONF="$(cat <<'EOF'
-MAKEOPTS="-j16 -l16"
+MAKE_CONF="$(cat <<EOF
+MAKEOPTS="$(portageq envvar MAKEOPTS)"
 ACCEPT_LICENSE="-* @FREE"
-EMERGE_DEFAULT_OPTS="--ask-enter-invalid --jobs=8 --load-average 16 --oneshot --alert"
-EMERGE_DEFAULT_OPTS="${EMERGE_DEFAULT_OPTS} --quiet-build --quiet-fail --verbose"
-PORTAGE_NICENESS=19
-PORTAGE_IONICE_COMMAND="ionice -c 3 -p \${PID}"
+EMERGE_DEFAULT_OPTS="$(portageq envvar EMERGE_DEFAULT_OPTS)"
+PORTAGE_NICENESS="$(portageq envvar PORTAGE_NICENESS)"
+PORTAGE_IONICE_COMMAND="$(portageq envvar PORTAGE_IONICE_COMMAND)"
 FEATURES="cgroup ipc-sandbox mount-sandbox network-sandbox pid-sandbox sandbox userfetch userpriv usersandbox collision-protect protect-owned strict strict-keepdir parallel-fetch parallel-install multilib-strict -news"
+GENTOO_MIRRORS="$(portageq envvar GENTOO_MIRRORS)"
 EOF
 )"
 
@@ -76,6 +77,7 @@ Usage: $0 [-o OVERLAY] [-t TARBALL] [-x EXEC_CMD] ACTION CHROOT
   -o, --overlay     Add an overlay to the chroot (start, new)
   -t, --tarball     Use this tarball when creating the chroot (new)
   -x, --exec        Use this command when chrooting (start)
+  -m, --make        File path with data to append to portage's make.conf
 
 Actions :
   start: Load chroot
@@ -142,6 +144,16 @@ parse() {
 			;;
 		--exec=*)
 			EXEC_CMD="${arg#*=}"
+			;;
+		-m|--make)
+			CUSTOM_MAKE_CONF="$(cat "$1")"
+			shift
+			;;
+		-m*)
+			CUSTOM_MAKE_CONF="$(cat "${arg#??}")"
+			;;
+		--make=*)
+			CUSTOM_MAKE_CONF="$(cat "${arg#*=}")"
 			;;
 		-h|--help)
 			usage
@@ -229,9 +241,8 @@ start() {
 	#
 
 	# Portage configuration
-	echo "GENTOO_MIRRORS=\"$(portageq envvar GENTOO_MIRRORS)\"" \
+	printf "%s\n%s\n" "${MAKE_CONF}" "${CUSTOM_MAKE_CONF}"
 		>"${CHROOT}/etc/portage/chroot.make.conf"
-	printf "%s" "${MAKE_CONF}" >>"${CHROOT}/etc/portage/chroot.make.conf"
 	[ -d "${CHROOT}/etc/portage/repos.conf" ] \
 		|| mkdir -p "${CHROOT}/etc/portage/repos.conf"
 	cp -L "${CHROOT}/usr/share/portage/config/repos.conf" \
