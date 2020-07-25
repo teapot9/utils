@@ -5,10 +5,10 @@
 set -eu
 
 # Constants
-CHROOT_BASE='/mnt/chroot'
-CHROOT_ROOT_SUBVOL="${CHROOT_BASE}/root"
-CHROOT_DEV='UUID=94f4a6ec-f57e-41da-a86d-b9f26e845b17'
-OVERLAY_BASE='/home/yoshi/Documents/portage'
+CHROOT_BASE="${CHROOT_BASE:-/mnt/chroot}"
+CHROOT_ROOT_SUBVOL="${CHROOT_ROOT_SUBVOL:-${CHROOT_BASE}/root}"
+CHROOT_DEV="${CHROOT_DEV:-LABEL=CHROOT}"
+OVERLAY_BASE="${OVERLAY_BASE:-/home/yoshi/Documents/portage}"
 
 # Global variables
 OVERLAYS=''
@@ -44,7 +44,7 @@ cd "${HOME}"
 EOF
 )"
 FIRST_CHROOT_SCRIPT="$(cat <<'EOF'
-#!/bin/sh
+#!/bin/bash
 locale-gen
 eselect locale set en_US.utf8
 env-update
