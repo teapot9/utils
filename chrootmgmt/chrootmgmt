@@ -24,17 +24,8 @@ pksetup() {
 	PKG_TEST="$1"
 	echo "${PKG_TEST} **" >>/etc/portage/package.accept_keywords
 }
-pkconf() {
-	case "$1" in
-		use) file="package.use/package" ;;
-		provided) file="profile/package.provided" ;;
-		key) file="package.accept_keywords" ;;
-		*) file="package.${1}" ;;
-	esac
-	busybox vi "/etc/portage/${file}"
-}
-alias emerge-deps='emerge -1av --onlydeps --with-test-deps ${PKG_TEST}'
-alias emerge-pkg='emerge -1av ${PKG_TEST}'
+alias emerge_deps='emerge -1av --onlydeps --with-test-deps ${PKG_TEST}'
+alias emerge_pkg='emerge -1av ${PKG_TEST}'
 env-update
 . /etc/profile
 PS1="(chroot) ${PS1}"
@@ -62,9 +53,10 @@ EMERGE_DEFAULT_OPTS="--ask-enter-invalid --jobs=8 --load-average 16 --oneshot --
 EMERGE_DEFAULT_OPTS="${EMERGE_DEFAULT_OPTS} --quiet-build --quiet-fail --verbose"
 PORTAGE_NICENESS=19
 PORTAGE_IONICE_COMMAND="ionice -c 3 -p \${PID}"
-FEATURES="cgroup ipc-sandbox mount-sandbox network-sandbox pid-sandbox sandbox userfetch userpriv usersandbox collision-protect protect-owned strict strict-keepdir parallel-fetch parallel-install multilib-strict -news"
+FEATURES="cgroup ipc-sandbox mount-sandbox network-sandbox pid-sandbox sandbox userfetch userpriv usersandbox collision-protect protect-owned strict strict-keepdir parallel-fetch parallel-install -news"
 EOF
 )"
+MAKE_CONF_MULTILIB='FEATURES="${FEATURES} multilib-strict"'
 
 #
 # usage() - Print help message
@@ -173,6 +165,15 @@ parse() {
 }
 
 #
+# status() - Prints the chroot status
+#
+
+status() {
+	mountpoint -q "${CHROOT}" && mounted="mounted" || mounted="not mounted"
+	printf "%s: %s\n" "${CHROOT}" "${mounted}"
+}
+
+#
 # start() - Start chroot: prepare for chroot
 #
 
@@ -231,7 +232,9 @@ start() {
 	# Portage configuration
 	echo "GENTOO_MIRRORS=\"$(portageq envvar GENTOO_MIRRORS)\"" \
 		>"${CHROOT}/etc/portage/chroot.make.conf"
-	printf "%s" "${MAKE_CONF}" >>"${CHROOT}/etc/portage/chroot.make.conf"
+	printf "%s\n" "${MAKE_CONF}" >>"${CHROOT}/etc/portage/chroot.make.conf"
+	[ -e "${CHROOT}/lib64" ] && printf "%s\n" "${MAKE_CONF_MULTILIB}" \
+		>>"${CHROOT}/etc/portage/chroot.make.conf"
 	[ -d "${CHROOT}/etc/portage/repos.conf" ] \
 		|| mkdir -p "${CHROOT}/etc/portage/repos.conf"
 	cp -L "${CHROOT}/usr/share/portage/config/repos.conf" \
@@ -252,7 +255,7 @@ start() {
 		|| ln -s /dev/null "${CHROOT}/root/.bash_history"
 
 	# root .profile
-	printf "%s" "${ROOT_PROFILE}" >"${CHROOT}/root/.profile"
+	printf "%s\n" "${ROOT_PROFILE}" >"${CHROOT}/root/.profile"
 
 	#
 	# Mount overlays
@@ -360,7 +363,7 @@ new() {
 		>>"${chroot_subvol}/etc/portage/make.conf"
 
 	# First chroot script
-	printf "%s" "${FIRST_CHROOT_SCRIPT}" >"${chroot_subvol}/root/.first"
+	printf "%s\n" "${FIRST_CHROOT_SCRIPT}" >"${chroot_subvol}/root/.first"
 	chmod +x "${chroot_subvol}/root/.first"
 	EXEC_CMD="/root/.first"
 
@@ -431,7 +434,7 @@ reset() {
 	chroot_base="${chroot_subvol}-base"
 	[ -d "${chroot_subvol}" ] || die "Subvolume ${chroot_subvol} not found"
 	[ -d "${chroot_base}" ] || die "Subvolume ${chroot_base} not found"
-	mountpoint -q "${CHROOT}" && stop
+	mountpoint -q "${CHROOT}" && stop && auto_start=1
 
 	#
 	# Rollback
@@ -439,6 +442,7 @@ reset() {
 
 	btrfs subvolume delete "${chroot_subvol}"
 	btrfs subvolume snapshot "${chroot_base}" "${chroot_subvol}"
+	[ -n "${auto_start:-}" ] && start
 }
 
 #
@@ -479,6 +483,7 @@ parse "$@"
 [ "$(id -u)" -eq 0 ] || die 'root permissions required'
 
 case "${ACTION}" in
+	status) status ;;
 	start) start ;;
 	stop) stop ;;
 	chroot) run_chroot ;;
