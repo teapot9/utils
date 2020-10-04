@@ -24,6 +24,8 @@ PKG_TEST=''
 pksetup() {
 	PKG_TEST="$1"
 	echo "${PKG_TEST} **" >>/etc/portage/package.accept_keywords
+	echo "${PKG_TEST} test.conf" >>/etc/portage/package.env
+	echo "${PKG_TEST} qa.conf" >>/etc/portage/package.env
 }
 alias emerge_deps='emerge -1av --onlydeps --with-test-deps ${PKG_TEST}'
 alias emerge_pkg='emerge -1av ${PKG_TEST}'
@@ -52,12 +54,13 @@ MAKEOPTS="$(portageq envvar MAKEOPTS)"
 ACCEPT_LICENSE="-* @FREE"
 EMERGE_DEFAULT_OPTS="$(portageq envvar EMERGE_DEFAULT_OPTS)"
 PORTAGE_NICENESS="$(portageq envvar PORTAGE_NICENESS)"
-PORTAGE_IONICE_COMMAND="$(portageq envvar PORTAGE_IONICE_COMMAND)"
+PORTAGE_IONICE_COMMAND="ionice -c 3 -p \\\${PID}"
 FEATURES="cgroup ipc-sandbox mount-sandbox network-sandbox pid-sandbox sandbox userfetch userpriv usersandbox collision-protect protect-owned strict strict-keepdir parallel-fetch parallel-install -news"
 GENTOO_MIRRORS="$(portageq envvar GENTOO_MIRRORS)"
 EOF
 )"
 MAKE_CONF_MULTILIB='FEATURES="${FEATURES} multilib-strict"'
+MAKE_CONF_MUSL='RUSTFLAGS="-C target-feature=-crt-static"'
 
 #
 # usage() - Print help message
@@ -246,6 +249,11 @@ start() {
 		>"${CHROOT}/etc/portage/chroot.make.conf"
 	[ -e "${CHROOT}/lib64" ] && printf "%s\n" "${MAKE_CONF_MULTILIB}" \
 		>>"${CHROOT}/etc/portage/chroot.make.conf"
+	case "$(basename -- "${CHROOT}")" in
+	*musl*)
+		printf "%s\n" "${MAKE_CONF_MUSL}" \
+			>>"${CHROOT}/etc/portage/chroot.make.conf"
+	esac
 	[ -d "${CHROOT}/etc/portage/repos.conf" ] \
 		|| mkdir -p "${CHROOT}/etc/portage/repos.conf"
 	cp -L "${CHROOT}/usr/share/portage/config/repos.conf" \
@@ -258,6 +266,10 @@ start() {
 		|| mkdir "${CHROOT}/etc/portage/env"
 	echo 'PORTAGE_TMPDIR="/var/tmp/portage-notmpfs"' \
 		>"${CHROOT}/etc/portage/env/notmpfs.conf"
+	echo 'FEATURES="${FEATURES} test"' \
+		>"${CHROOT}/etc/portage/env/test.conf"
+	echo 'FEATURES="${FEATURES} strict strict-keepdir stricter"' \
+		>"${CHROOT}/etc/portage/env/qa.conf"
 
 	# System configuration
 	echo "C.UTF8 UTF-8" >"${CHROOT}/etc/locale.gen"
