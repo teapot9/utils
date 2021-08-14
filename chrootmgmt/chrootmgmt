@@ -18,6 +18,8 @@ ACTION=''
 CHROOT=''
 CUSTOM_MAKE_CONF=''
 
+umask 022
+
 # Text constants
 ROOT_PROFILE="$(cat <<'EOF'
 PKG_TEST=''
@@ -57,6 +59,7 @@ PORTAGE_NICENESS="$(portageq envvar PORTAGE_NICENESS)"
 PORTAGE_IONICE_COMMAND="ionice -c 3 -p \\\${PID}"
 FEATURES="cgroup ipc-sandbox mount-sandbox network-sandbox pid-sandbox sandbox userfetch userpriv usersandbox collision-protect protect-owned strict strict-keepdir parallel-fetch parallel-install -news"
 GENTOO_MIRRORS="$(portageq envvar GENTOO_MIRRORS)"
+ALLOW_TEST="\${ALLOW_TEST} network"
 EOF
 )"
 MAKE_CONF_MULTILIB='FEATURES="${FEATURES} multilib-strict"'
@@ -270,6 +273,8 @@ start() {
 		>"${CHROOT}/etc/portage/env/test.conf"
 	echo 'FEATURES="${FEATURES} strict strict-keepdir stricter"' \
 		>"${CHROOT}/etc/portage/env/qa.conf"
+	echo 'CMAKE_QA_SRC_DIR_READONLY=y' \
+		>>"${CHROOT}/etc/portage/env/qa.conf"
 
 	# System configuration
 	echo "C.UTF8 UTF-8" >"${CHROOT}/etc/locale.gen"
@@ -347,6 +352,13 @@ run_chroot() {
 #
 
 stop() {
+	if [ -n "$(lsof -t "${CHROOT}")" ]; then
+		lsof -t "${CHROOT}" | xargs kill -TERM
+		sleep 3
+		if [ -n "$(lsof -t "${CHROOT}")" ]; then
+			lsof -t "${CHROOT}" | xargs kill -KILL
+		fi
+	fi
 	umount -R "${CHROOT}"
 }
 
@@ -363,7 +375,7 @@ new() {
 
 	chroot_name="$(basename -- "${CHROOT}")"
 	chroot_subvol="${CHROOT_ROOT_SUBVOL}/${chroot_name}"
-	[ ! -d "${CHROOT}" ] || die "${CHROOT} already exists"
+	mountpoint -q "${CHROOT}" && die "${CHROOT} is mounted"
 	[ ! -d "${chroot_subvol}" ] || die "${chroot_subvol} already exists"
 	[ -f "${TARBALL}" ] || die "Tarball ${TARBALL} not found"
 
@@ -395,12 +407,8 @@ new() {
 	#
 
 	# Create chroot directory
-	remount rw
-	if mkdir "${CHROOT}"; then
-		remount ro || :
-	else
-		remount ro || :
-		die "Could not create ${CHROOT} directory"
+	if [ ! -d "${CHROOT}" ]; then
+		mkdir "${CHROOT}" || die "Could not create ${CHROOT} directory"
 	fi
 
 	# Chroot
@@ -493,9 +501,7 @@ destroy() {
 		btrfs subvolume delete "${chroot_base}"
 	fi
 	btrfs subvolume delete "${chroot_subvol}"
-	remount rw
 	rmdir "${CHROOT}" || echo "Could not delete ${CHROOT} directory"
-	remount ro
 }
 
 #
