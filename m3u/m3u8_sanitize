@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Change paths encoding of an M3U playlist"""
+
+import argparse
+import enum
+import logging
+import os.path
+import shutil
+import sys
+import typing
+import urllib.parse
+
+import m3u8  # type: ignore
+
+logging.basicConfig(
+    format='%(levelname)s: %(message)s', level=logging.NOTSET
+)
+logger = logging.getLogger(__name__)
+
+
+class Encoding(enum.Enum):
+    """Encoding format for paths"""
+    #: Normal UTF-8 path encoding
+    NORMAL = enum.auto()
+    #: Paths are encoded in URL format (``%20``)
+    URL = enum.auto()
+
+
+def encode(uri: str, dirname: str, absolute: bool = False,
+           encoding: Encoding = Encoding.NORMAL, resolve: bool = False) -> str:
+    """Encode a given URI"""
+    scheme = urllib.parse.urlparse(uri, scheme='file').scheme
+    uri_orig = uri
+
+    if scheme == 'file':
+        uri = uri.removeprefix('file://')
+        prefix = '' if os.path.isabs(uri) else dirname
+
+        if not os.path.exists(os.path.join(prefix, uri)):
+            uri = urllib.parse.unquote(uri)
+        if not os.path.exists(os.path.join(prefix, uri)):
+            logger.error("Parsed %s as %s: file not found",
+                         uri_orig, os.path.join(prefix, uri))
+            raise Exception(f"Cannot parse URI {uri_orig}")
+
+        uri = os.path.join(prefix, uri)
+        if resolve:
+            uri = os.path.realpath(uri)
+        if not absolute:
+            uri = os.path.relpath(uri, start=dirname)
+        if encoding is Encoding.URL:
+            uri = urllib.parse.quote(uri)
+
+    logger.debug("Parsed %s as %s", uri_orig, uri)
+    return uri
+
+
+def main() -> None:
+    """Main entry point"""
+    parser = argparse.ArgumentParser(
+        description="Convert filenames format of M3U8 playlists"
+    )
+    parser.add_argument(
+        '--verbose', '-v', action='count', default=0,
+        help="be verbose",
+    )
+    parser.add_argument(
+        '--in-place', '-i', type=str, default=False, const=True, nargs='?',
+        metavar='SUFFIX',
+        help="edit files in place (makes backup if SUFFIX supplied)",
+    )
+    parser.add_argument(
+        '--encoding', '-e', type=str,
+        choices=('normal', 'url'), default='normal',
+        help="select encoding of file paths",
+    )
+    parser.add_argument(
+        '--absolute', '-a', action='store_true',
+        help="use absolute paths rather than relative",
+    )
+    parser.add_argument(
+        '--symlinks', '-s', action='store_true',
+        help="expand symlinks",
+    )
+    parser.add_argument(
+        'playlists', type=str, nargs='+',
+        help="playlists to update",
+    )
+    args = parser.parse_args()
+
+    if args.verbose >= 2:
+        logger.setLevel(logging.DEBUG)
+    elif args.verbose >= 1:
+        logger.setLevel(logging.INFO)
+    else:
+        logger.setLevel(logging.WARNING)
+
+    encoding = Encoding.URL if args.encoding == 'url' \
+        else Encoding.NORMAL if args.encoding == 'normal' \
+        else None
+    assert encoding is not None
+
+    for playlist_path in args.playlists:
+        logger.info("Reading %s", playlist_path)
+        playlist = m3u8.load(playlist_path)
+        dirname = os.path.abspath(os.path.dirname(playlist_path))
+
+        for seg in playlist.segments:
+            seg.uri = typing.cast(str, seg.uri)
+            seg.uri = encode(seg.uri, dirname, args.absolute, encoding,
+                             args.symlinks)
+
+        if args.in_place:
+            if args.in_place is not True:
+                shutil.copy(playlist_path, playlist_path + args.in_place)
+            with open(playlist_path, 'w') as out:
+                out.write(playlist.dumps())
+        else:
+            sys.stdout.write(playlist.dumps())
+
+
+main()

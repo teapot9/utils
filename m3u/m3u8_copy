@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Copy medias from a M3U playlist into a directory"""
+
+import argparse
+import logging
+import os
+import os.path
+import shutil
+import typing
+
+import m3u8  # type: ignore
+
+logging.basicConfig(
+    format='%(levelname)s: %(message)s', level=logging.NOTSET
+)
+logger = logging.getLogger(__name__)
+
+
+def main() -> None:
+    """Main enry point"""
+    parser = argparse.ArgumentParser(
+        description="Copy medias from a M3U playlist into a directory"
+    )
+    parser.add_argument(
+        '--verbose', '-v', action='count', default=0,
+        help="be verbose",
+    )
+    parser.add_argument(
+        '--pretend', '-p', action='store_true',
+        help="don't copy anything, just display what would be done",
+    )
+    parser.add_argument(
+        '--output', '-o', type=str, default=None,
+        help="output directory of the files",
+    )
+    parser.add_argument(
+        '--index', '-i', action='store_true',
+        help="add playlist index to filenames",
+    )
+    parser.add_argument(
+        'playlists', type=str, nargs='+',
+        help="playlists to read",
+    )
+    args = parser.parse_args()
+
+    if args.verbose >= 2:
+        logger.setLevel(logging.DEBUG)
+    elif args.verbose >= 1:
+        logger.setLevel(logging.INFO)
+    else:
+        logger.setLevel(logging.WARNING)
+
+    output = args.output if args.output is not None else os.getcwd()
+
+    for playlist_path in args.playlists:
+        logger.info("Copying playlist %s to %s", playlist_path, output)
+        playlist = m3u8.load(playlist_path)
+        dirname = os.path.abspath(os.path.dirname(playlist_path))
+
+        count = 0
+        for seg in playlist.segments:
+            count += 1
+            seg.uri = typing.cast(str, seg.uri)
+
+            path_src = seg.uri
+            if not os.path.isabs(path_src):
+                path_src = os.path.join(dirname, path_src)
+
+            path_dst = ''
+            if args.index:
+                path_dst += f'{count}. '
+            path_dst += os.path.basename(path_src)
+            path_dst = os.path.join(output, path_dst)
+
+            logger.debug("Copying file %s to %s", path_src, path_dst)
+            if args.pretend:
+                continue
+            try:
+                shutil.copy(path_src, path_dst)
+            except OSError:
+                logger.exception("Failed to copy file %s to %s",
+                                 path_src, path_dst)
+
+
+main()

@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eux
+
+err=0
+py_files="m3u8_sanitize m3u8_copy"
+
+shellcheck -o all "$0" || err=1
+
+for f in ${py_files}; do
+	flake8 "${f}" || err=1
+	pylint "${f}" || err=1
+	mypy \
+		--disallow-untyped-defs \
+		--no-implicit-optional \
+		--warn-redundant-casts \
+		--warn-unused-ignores \
+		--warn-unreachable \
+		--show-error-codes \
+		"${f}" || err=1
+done
+
+exit "${err}"
